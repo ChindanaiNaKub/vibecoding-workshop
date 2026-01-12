@@ -32,17 +32,32 @@ function pointToLineDistance(px, py, x1, y1, x2, y2) {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
-// Import GameCanvas component
-// Note: Using direct function reference since we're using script tags
+// GameCanvas component
 function GameCanvas() {
   const canvasRef = React.useRef(null);
   const engineRef = React.useRef(null);
   const runnerRef = React.useRef(null);
   const bodiesRef = React.useRef(null);
   const tethersRef = React.useRef([]);
-  const winnerRef = React.useRef(null);  // Tracks winner: 1 or 2
-  const currentPlayerRef = React.useRef(1);  // Tracks current player: 1 or 2
-  const tetherCountRef = React.useRef({ 1: 2, 2: 2 });  // Track tether count per player
+  const winnerRef = React.useRef(null);
+  const currentPlayerRef = React.useRef(1);
+  const tetherCountRef = React.useRef({ 1: 2, 2: 2 });
+
+  // NEW: Reinforcement levels tracking
+  const reinforcementLevelsRef = React.useRef({});
+
+  // NEW: Sever cooldown tracking
+  const canSeverRef = React.useRef({ 1: true, 2: true });
+  const [canSever, setCanSever] = React.useState({ 1: true, 2: true });
+
+  // NEW: Camera shake state
+  const [shakeIntensity, setShakeIntensity] = React.useState(0);
+
+  // UI State
+  const [showInstructions, setShowInstructions] = React.useState(true);
+  const [hoverState, setHoverState] = React.useState({ type: null, player: null, tetherId: null });
+  const [particles, setParticles] = React.useState([]);
+  const [actionFeedback, setActionFeedback] = React.useState(null);
 
   // Initialize physics engine
   React.useEffect(() => {
@@ -88,7 +103,13 @@ function GameCanvas() {
     bodiesRef.current = { core, wall1, wall2 };
     Matter.World.add(engine.world, [core, wall1, wall2]);
 
-    // Create test tethers from both walls to core (tug-of-war setup)
+    // Helper to generate unique tether ID
+    let tetherIdCounter = 0;
+    function createTetherId() {
+      return `tether_${Date.now()}_${tetherIdCounter++}`;
+    }
+
+    // Create initial tethers with IDs
     const tether1 = Matter.Constraint.create({
       bodyA: wall1,
       bodyB: core,
@@ -96,8 +117,11 @@ function GameCanvas() {
       damping: 0.1,
       length: 200
     });
+    tether1.id = createTetherId();
+    tether1.owner = 1;
     tethersRef.current.push(tether1);
     Matter.World.add(engine.world, tether1);
+    reinforcementLevelsRef.current[tether1.id] = 0;
 
     const tether2 = Matter.Constraint.create({
       bodyA: wall2,
@@ -106,8 +130,11 @@ function GameCanvas() {
       damping: 0.1,
       length: 200
     });
+    tether2.id = createTetherId();
+    tether2.owner = 2;
     tethersRef.current.push(tether2);
     Matter.World.add(engine.world, tether2);
+    reinforcementLevelsRef.current[tether2.id] = 0;
 
     // Start physics runner
     const runner = Matter.Runner.create();
@@ -115,41 +142,37 @@ function GameCanvas() {
     Matter.Runner.run(runner, engine);
     runnerRef.current = runner;
 
-    // Win condition: Detect when Core hits a wall
+    // Win condition detection with camera shake
     Matter.Events.on(engine, 'collisionStart', function(event) {
       const pairs = event.pairs;
       for (let i = 0; i < pairs.length; i++) {
         const bodyA = pairs[i].bodyA;
         const bodyB = pairs[i].bodyB;
 
-        // Check if Core is involved in collision
         const coreBody = (bodyA.label === 'core') ? bodyA : (bodyB.label === 'core') ? bodyB : null;
         if (!coreBody) continue;
 
-        // Check which wall was hit
         const otherBody = (bodyA === coreBody) ? bodyB : bodyA;
         if (otherBody.label === 'wall-player1') {
-          winnerRef.current = 2;  // Player 2 wins if Core hits Player 1's wall
-          console.log('Player 2 Wins!');
+          winnerRef.current = 2;
+          setShakeIntensity(1.5); // Strong shake on wall impact
         } else if (otherBody.label === 'wall-player2') {
-          winnerRef.current = 1;  // Player 1 wins if Core hits Player 2's wall
-          console.log('Player 1 Wins!');
+          winnerRef.current = 1;
+          setShakeIntensity(1.5); // Strong shake on wall impact
         }
       }
     });
 
-    // Reset game to initial state
+    // Reset game
     function resetGame() {
-      // Reset Core position
       Matter.Body.setPosition(core, { x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 });
       Matter.Body.setVelocity(core, { x: 0, y: 0 });
       Matter.Body.setAngularVelocity(core, 0);
 
-      // Remove all existing tethers
       tethersRef.current.forEach(t => Matter.World.remove(engine.world, t));
       tethersRef.current = [];
+      reinforcementLevelsRef.current = {};
 
-      // Recreate initial tethers
       const tether1 = Matter.Constraint.create({
         bodyA: wall1,
         bodyB: core,
@@ -157,8 +180,11 @@ function GameCanvas() {
         damping: 0.1,
         length: 200
       });
+      tether1.id = createTetherId();
+      tether1.owner = 1;
       tethersRef.current.push(tether1);
       Matter.World.add(engine.world, tether1);
+      reinforcementLevelsRef.current[tether1.id] = 0;
 
       const tether2 = Matter.Constraint.create({
         bodyA: wall2,
@@ -167,19 +193,67 @@ function GameCanvas() {
         damping: 0.1,
         length: 200
       });
+      tether2.id = createTetherId();
+      tether2.owner = 2;
       tethersRef.current.push(tether2);
       Matter.World.add(engine.world, tether2);
+      reinforcementLevelsRef.current[tether2.id] = 0;
 
-      // Reset winner, current player, and tether counts
       winnerRef.current = null;
       currentPlayerRef.current = 1;
       tetherCountRef.current = { 1: 2, 2: 2 };
-      console.log('Game reset!');
+      canSeverRef.current = { 1: true, 2: true };
+      setCanSever({ 1: true, 2: true });
     }
 
-    // Click handler for anchoring, severing tethers, or restarting
+    // ENHANCED: Add particles with direction, size, and trails
+    function addParticles(x, y, color, count = 10, angle = null, size = 3) {
+      const newParticles = [];
+      for (let i = 0; i < count; i++) {
+        let vx, vy;
+        if (angle !== null) {
+          // Directional burst
+          const spread = (Math.random() - 0.5) * 1.5;
+          const speed = 3 + Math.random() * 5;
+          vx = Math.cos(angle + spread) * speed;
+          vy = Math.sin(angle + spread) * speed;
+        } else {
+          // Radial burst
+          vx = (Math.random() - 0.5) * 8;
+          vy = (Math.random() - 0.5) * 8;
+        }
+
+        newParticles.push({
+          x, y,
+          vx, vy,
+          life: 1.0,
+          maxLife: 1.0,
+          color,
+          size: size + Math.random() * 2,
+          trail: [] // Trail array
+        });
+      }
+      setParticles(prev => [...prev, ...newParticles]);
+    }
+
+    // Switch turn with sever cooldown management
+    function switchTurn() {
+      const nextPlayer = currentPlayerRef.current === 1 ? 2 : 1;
+      currentPlayerRef.current = nextPlayer;
+      // Re-enable sever for the player whose turn is starting
+      const newCanSever = { ...canSeverRef.current };
+      newCanSever[nextPlayer] = true;
+      canSeverRef.current = newCanSever;
+      setCanSever(newCanSever);
+    }
+
+    // Click handler
     function handleCanvasClick(event) {
-      // If game is over, reset on any click
+      if (showInstructions) {
+        setShowInstructions(false);
+        return;
+      }
+
       if (winnerRef.current) {
         resetGame();
         return;
@@ -188,12 +262,11 @@ function GameCanvas() {
       const rect = canvas.getBoundingClientRect();
       const clickX = event.clientX - rect.left;
       const clickY = event.clientY - rect.top;
+      const currentPlayer = currentPlayerRef.current;
 
-      // Check if click is on a wall (for anchoring)
-      // Wall 1 (Player 1): x from 35-65, y from 200-400
+      // Check wall clicks for anchoring
       if (clickX >= 35 && clickX <= 65 && clickY >= 200 && clickY <= 400) {
-        if (currentPlayerRef.current === 1 && tetherCountRef.current[1] < 7) {
-          // Create new tether from wall1 to core
+        if (currentPlayer === 1 && tetherCountRef.current[1] < 7) {
           const newTether = Matter.Constraint.create({
             bodyA: wall1,
             bodyB: core,
@@ -201,21 +274,21 @@ function GameCanvas() {
             damping: 0.1,
             length: 200
           });
+          newTether.id = createTetherId();
+          newTether.owner = 1;
           tethersRef.current.push(newTether);
           Matter.World.add(engine.world, newTether);
+          reinforcementLevelsRef.current[newTether.id] = 0;
           tetherCountRef.current[1]++;
-          console.log('Player 1 anchored new tether!');
-          // Switch turns
-          currentPlayerRef.current = 2;
-          console.log(`Player ${currentPlayerRef.current}'s turn`);
+          addParticles(50, clickY, '#CD853F', 15, null, 4);
+          setActionFeedback({ text: 'Tether Anchored!', x: 150, y: 80, life: 60 });
+          switchTurn();
           return;
         }
       }
 
-      // Wall 2 (Player 2): x from 735-765, y from 200-400
       if (clickX >= 735 && clickX <= 765 && clickY >= 200 && clickY <= 400) {
-        if (currentPlayerRef.current === 2 && tetherCountRef.current[2] < 7) {
-          // Create new tether from wall2 to core
+        if (currentPlayer === 2 && tetherCountRef.current[2] < 7) {
           const newTether = Matter.Constraint.create({
             bodyA: wall2,
             bodyB: core,
@@ -223,18 +296,20 @@ function GameCanvas() {
             damping: 0.1,
             length: 200
           });
+          newTether.id = createTetherId();
+          newTether.owner = 2;
           tethersRef.current.push(newTether);
           Matter.World.add(engine.world, newTether);
+          reinforcementLevelsRef.current[newTether.id] = 0;
           tetherCountRef.current[2]++;
-          console.log('Player 2 anchored new tether!');
-          // Switch turns
-          currentPlayerRef.current = 1;
-          console.log(`Player ${currentPlayerRef.current}'s turn`);
+          addParticles(750, clickY, '#4682B4', 15, null, 4);
+          setActionFeedback({ text: 'Tether Anchored!', x: 650, y: 80, life: 60 });
+          switchTurn();
           return;
         }
       }
 
-      // Check each tether for click (for severing)
+      // Check tether clicks for reinforcing or severing
       for (let i = tethersRef.current.length - 1; i >= 0; i--) {
         const t = tethersRef.current[i];
         const x1 = t.bodyA.position.x;
@@ -244,75 +319,304 @@ function GameCanvas() {
 
         const distance = pointToLineDistance(clickX, clickY, x1, y1, x2, y2);
 
-        // If click is within 10px of tether, sever it
         if (distance < 10) {
-          Matter.World.remove(engine.world, t);
-          tethersRef.current.splice(i, 1);
-          // Decrease tether count for the owner (based on which wall)
-          const owner = (t.bodyA === wall1) ? 1 : 2;
-          tetherCountRef.current[owner]--;
-          console.log('Tether severed!');
-          // Switch turns after severing
-          currentPlayerRef.current = currentPlayerRef.current === 1 ? 2 : 1;
-          console.log(`Player ${currentPlayerRef.current}'s turn`);
-          break;  // Only sever one tether per click
+          const owner = t.owner;
+          const currentLevel = reinforcementLevelsRef.current[t.id] || 0;
+          const color = owner === 1 ? '#CD853F' : '#4682B4';
+
+          // Check if clicking own tether -> REINFORCE
+          if (owner === currentPlayer) {
+            if (currentLevel < 3) {
+              // Increase reinforcement level
+              const newLevel = currentLevel + 1;
+              reinforcementLevelsRef.current[t.id] = newLevel;
+
+              // Stiffness multipliers: 1.0 → 1.5 → 2.0 → 2.5
+              const newStiffness = 0.05 * (1 + newLevel * 0.5);
+              t.stiffness = newStiffness;
+
+              // Golden spark particles for reinforce
+              addParticles(clickX, clickY, '#FFD700', 20, null, 5);
+              setActionFeedback({ text: `Reinforced to Lv${newLevel}!`, x: clickX, y: clickY - 20, life: 60 });
+              switchTurn();
+            } else {
+              // Max level feedback
+              setActionFeedback({ text: 'Max Reinforce!', x: clickX, y: clickY - 20, life: 30 });
+            }
+            return;
+          }
+
+          // Clicking enemy tether -> SEVER (if cooldown allows)
+          if (canSeverRef.current[currentPlayer]) {
+            // Calculate tether angle for directional particles
+            const angle = Math.atan2(y2 - y1, x2 - x1);
+
+            Matter.World.remove(engine.world, t);
+            tethersRef.current.splice(i, 1);
+            delete reinforcementLevelsRef.current[t.id];
+            tetherCountRef.current[owner]--;
+
+            // Directional particles along tether
+            addParticles(clickX, clickY, color, 25, angle, 4);
+            setActionFeedback({ text: 'Tether Severed!', x: clickX, y: clickY - 20, life: 60 });
+
+            // Trigger camera shake
+            setShakeIntensity(0.5);
+
+            // Set sever cooldown
+            const newCanSever = { ...canSeverRef.current };
+            newCanSever[currentPlayer] = false;
+            canSeverRef.current = newCanSever;
+            setCanSever(newCanSever);
+
+            switchTurn();
+          } else {
+            // Cooldown feedback
+            setActionFeedback({ text: 'Sever Cooldown!', x: clickX, y: clickY - 20, life: 30 });
+          }
+          return;
         }
       }
     }
 
+    // Mouse move handler for hover effects
+    function handleMouseMove(event) {
+      if (showInstructions || winnerRef.current) {
+        setHoverState({ type: null, player: null, tetherId: null });
+        return;
+      }
+
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = event.clientX - rect.left;
+      const mouseY = event.clientY - rect.top;
+      const currentPlayer = currentPlayerRef.current;
+
+      // Check wall hover
+      if (mouseX >= 35 && mouseX <= 65 && mouseY >= 200 && mouseY <= 400) {
+        if (currentPlayer === 1 && tetherCountRef.current[1] < 7) {
+          setHoverState({ type: 'wall', player: 1, tetherId: null });
+          return;
+        }
+      }
+
+      if (mouseX >= 735 && mouseX <= 765 && mouseY >= 200 && mouseY <= 400) {
+        if (currentPlayer === 2 && tetherCountRef.current[2] < 7) {
+          setHoverState({ type: 'wall', player: 2, tetherId: null });
+          return;
+        }
+      }
+
+      // Check tether hover
+      for (const t of tethersRef.current) {
+        const x1 = t.bodyA.position.x;
+        const y1 = t.bodyA.position.y;
+        const x2 = t.bodyB.position.x;
+        const y2 = t.bodyB.position.y;
+        const distance = pointToLineDistance(mouseX, mouseY, x1, y1, x2, y2);
+
+        if (distance < 10) {
+          const owner = t.owner;
+          setHoverState({ type: 'tether', player: owner, tetherId: t.id });
+          return;
+        }
+      }
+
+      setHoverState({ type: null, player: null, tetherId: null });
+    }
+
     canvas.addEventListener('click', handleCanvasClick);
+    canvas.addEventListener('mousemove', handleMouseMove);
+
+    // Update particles with trail effect
+    function updateParticles() {
+      setParticles(prev => {
+        const updated = prev.map(p => {
+          // Add current position to trail
+          const newTrail = [...p.trail, { x: p.x, y: p.y }];
+          if (newTrail.length > 5) newTrail.shift(); // Keep last 5 positions
+
+          return {
+            ...p,
+            x: p.x + p.vx,
+            y: p.y + p.vy,
+            vx: p.vx * 0.98, // Slight deceleration
+            vy: p.vy * 0.98,
+            life: p.life - 0.02,
+            trail: newTrail
+          };
+        }).filter(p => p.life > 0);
+
+        return updated;
+      });
+    }
+
+    // Update action feedback
+    function updateActionFeedback() {
+      setActionFeedback(prev => {
+        if (!prev) return null;
+        const updated = { ...prev, life: prev.life - 1 };
+        return updated.life > 0 ? updated : null;
+      });
+    }
+
+    // Update shake intensity (decay)
+    function updateShake() {
+      setShakeIntensity(prev => {
+        if (prev < 0.01) return 0;
+        return prev * 0.9;
+      });
+    }
 
     // Render loop
     let animationFrameId;
     function render() {
-      // Clear canvas
-      ctx.fillStyle = '#2a2a2a';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      // Draw turn indicator (if game not over)
-      if (!winnerRef.current) {
-        const playerColor = currentPlayerRef.current === 1 ? '#CD853F' : '#4682B4';  // Peru/SteelBlue
-        ctx.fillStyle = playerColor;
-        ctx.font = 'bold 28px Courier New';
-        ctx.textAlign = 'center';
-        ctx.fillText(`PLAYER ${currentPlayerRef.current}'S TURN`, CANVAS_WIDTH / 2, 40);
+      // Apply camera shake
+      let shakeX = 0, shakeY = 0;
+      if (shakeIntensity > 0.01) {
+        shakeX = (Math.random() - 0.5) * shakeIntensity * 15;
+        shakeY = (Math.random() - 0.5) * shakeIntensity * 15;
       }
 
-      // Draw arena boundary (circular)
-      ctx.strokeStyle = '#3a3a3a';
-      ctx.lineWidth = 2;
+      ctx.save();
+      ctx.translate(shakeX, shakeY);
+
+      ctx.fillStyle = '#1a1a1a';
+      ctx.fillRect(-shakeX, -shakeY, canvas.width, canvas.height);
+
+      // Draw instructions overlay
+      if (showInstructions) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = '#FFD700';
+        ctx.font = 'bold 36px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText('SEVER', CANVAS_WIDTH / 2, 60);
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '20px Courier New';
+        ctx.fillText('A Turn-Based Physics Strategy Game', CANVAS_WIDTH / 2, 100);
+
+        ctx.font = '16px Courier New';
+        ctx.textAlign = 'left';
+        const instructions = [
+          '',
+          'GOAL: Push the heavy Core into the opponent\'s wall!',
+          '',
+          'ACTIONS (each turn, do ONE):',
+          '',
+          '  🎯 ANCHOR: Click YOUR wall to attach a new tether',
+          '     (max 7 tethers per player)',
+          '',
+          '  💪 REINFORCE: Click YOUR tether to strengthen it',
+          '     (max 3 levels, makes tether stiffer)',
+          '',
+          '  ✂️ SEVER: Click ANY tether to cut it',
+          '     (1-turn cooldown after use)',
+          '',
+          'Players take turns. Watch the tether tension -',
+          'when tethers are stretched and you sever at the',
+          'right moment, the Core will snap toward the enemy!',
+          '',
+          'Player 1 (ORANGE) ← vs → Player 2 (BLUE)',
+          '',
+          'Click anywhere to START'
+        ];
+
+        let y = 140;
+        instructions.forEach(line => {
+          ctx.fillText(line, CANVAS_WIDTH / 2 - 180, y);
+          y += 22;
+        });
+
+        ctx.restore();
+        animationFrameId = requestAnimationFrame(render);
+        return;
+      }
+
+      // Draw arena boundary
+      ctx.strokeStyle = '#4a4a4a';
+      ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.arc(CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2, 250, 0, Math.PI * 2);
       ctx.stroke();
 
-      // Draw walls
-      ctx.fillStyle = '#8B4513';  // Rust color
+      // Draw turn indicator
+      if (!winnerRef.current) {
+        const playerColor = currentPlayerRef.current === 1 ? '#CD853F' : '#4682B4';
+        ctx.fillStyle = playerColor;
+        ctx.font = 'bold 24px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText(`PLAYER ${currentPlayerRef.current}'S TURN`, CANVAS_WIDTH / 2, 35);
+
+        ctx.font = '14px Courier New';
+        ctx.fillStyle = '#888';
+        ctx.fillText(`P1 Tethers: ${tetherCountRef.current[1]}/7`, 120, 35);
+        ctx.fillText(`P2 Tethers: ${tetherCountRef.current[2]}/7`, 680, 35);
+
+        // Show sever cooldown indicator
+        if (!canSever[currentPlayerRef.current]) {
+          ctx.fillStyle = '#ff6666';
+          ctx.font = 'bold 14px Courier New';
+          ctx.fillText('SEVER COOLDOWN', CANVAS_WIDTH / 2, 55);
+        }
+      }
+
+      // Draw walls with player colors
+      ctx.fillStyle = '#CD853F';
       ctx.fillRect(wall1.position.x - WALL_WIDTH / 2, wall1.position.y - WALL_HEIGHT / 2, WALL_WIDTH, WALL_HEIGHT);
+      ctx.fillStyle = '#4682B4';
       ctx.fillRect(wall2.position.x - WALL_WIDTH / 2, wall2.position.y - WALL_HEIGHT / 2, WALL_WIDTH, WALL_HEIGHT);
 
-      // Draw tethers (color-coded by owner, stress visualization)
-      ctx.lineWidth = 3;
-      tethersRef.current.forEach(t => {
-        // Base color based on which wall the tether is attached to
-        const baseColor = (t.bodyA === wall1) ? '#CD853F' : '#4682B4';  // Peru for P1, SteelBlue for P2
+      // Draw wall labels
+      ctx.font = 'bold 12px Courier New';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#fff';
+      ctx.fillText('P1', 50, 190);
+      ctx.fillText('P1', 50, 415);
+      ctx.fillText('P2', 750, 190);
+      ctx.fillText('P2', 750, 415);
 
-        // Calculate stress (how much tether is stretched beyond rest length)
+      // Draw hover hints on walls
+      if (hoverState.type === 'wall' && hoverState.player === currentPlayerRef.current) {
+        const hintX = hoverState.player === 1 ? 50 : 750;
+        const hintColor = hoverState.player === 1 ? '#CD853F' : '#4682B4';
+        ctx.fillStyle = hintColor;
+        ctx.font = 'bold 14px Courier New';
+        ctx.fillText('CLICK TO', hintX, 170);
+        ctx.fillText('ANCHOR', hintX, 155);
+
+        // Glow effect
+        ctx.strokeStyle = hintColor;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(hintX, 300, 110, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // Draw tethers with stress visualization and reinforcement levels
+      tethersRef.current.forEach(t => {
+        const baseColor = (t.bodyA === wall1) ? '#CD853F' : '#4682B4';
+        const reinforcementLevel = reinforcementLevelsRef.current[t.id] || 0;
+
         const bodyAPos = t.bodyA.position;
         const bodyBPos = t.bodyB.position;
         const dx = bodyBPos.x - bodyAPos.x;
         const dy = bodyBPos.y - bodyAPos.y;
         const currentLength = Math.sqrt(dx * dx + dy * dy);
         const restLength = t.length || 200;
-        const stretchRatio = Math.max(0, (currentLength - restLength) / restLength);  // 0 = no stretch, 1+ = stretched
+        const stretchRatio = Math.max(0, (currentLength - restLength) / restLength);
 
-        // Blend base color with white based on stress (max stress = 50% white blend)
-        const stressBlend = Math.min(0.5, stretchRatio * 0.5);
+        // Base thickness increases with reinforcement
+        let baseThickness = 4 + reinforcementLevel * 1.5;
+
         ctx.strokeStyle = baseColor;
+        ctx.lineWidth = baseThickness;
 
-        // Apply stress glow by drawing again with white and transparency
         if (stretchRatio > 0.1) {
+          const stressBlend = Math.min(0.6, stretchRatio);
           ctx.strokeStyle = `rgba(255, 255, 255, ${stressBlend})`;
-          ctx.lineWidth = 3 + (stressBlend * 4);  // Thicker when stressed
+          ctx.lineWidth = baseThickness + (stressBlend * 3);
         }
 
         ctx.beginPath();
@@ -320,17 +624,67 @@ function GameCanvas() {
         ctx.lineTo(t.bodyB.position.x, t.bodyB.position.y);
         ctx.stroke();
 
-        // Reset line width for next tether
-        ctx.lineWidth = 3;
+        // Draw reinforcement level indicators (dots along tether)
+        if (reinforcementLevel > 0) {
+          ctx.fillStyle = '#FFD700'; // Gold dots for reinforcement
+          for (let i = 0; i < reinforcementLevel; i++) {
+            const tPos = (i + 1) / (reinforcementLevel + 1);
+            const dotX = bodyAPos.x + dx * tPos;
+            const dotY = bodyAPos.y + dy * tPos;
+            ctx.beginPath();
+            ctx.arc(dotX, dotY, 4, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
       });
 
-      // Draw Core
+      // Draw hover highlight on tethers
+      if (hoverState.type === 'tether' && hoverState.tetherId) {
+        const hoveredTether = tethersRef.current.find(t => t.id === hoverState.tetherId);
+        if (hoveredTether) {
+          const isOwnTether = hoveredTether.owner === currentPlayerRef.current;
+          const canSeverTether = canSever[currentPlayerRef.current];
+
+          ctx.strokeStyle = isOwnTether ? '#FFD700' : (canSeverTether ? '#ffffff' : '#666666');
+          ctx.lineWidth = 8;
+          ctx.globalAlpha = 0.5;
+          ctx.beginPath();
+          ctx.moveTo(hoveredTether.bodyA.position.x, hoveredTether.bodyA.position.y);
+          ctx.lineTo(hoveredTether.bodyB.position.x, hoveredTether.bodyB.position.y);
+          ctx.stroke();
+          ctx.globalAlpha = 1.0;
+
+          // Draw action hint at top
+          ctx.font = 'bold 14px Courier New';
+          ctx.textAlign = 'center';
+
+          if (isOwnTether) {
+            ctx.fillStyle = '#FFD700';
+            const level = reinforcementLevelsRef.current[hoveredTether.id] || 0;
+            if (level < 3) {
+              ctx.fillText(`CLICK TO REINFORCE (Lv ${level} → ${level + 1})`, CANVAS_WIDTH / 2, 55);
+            } else {
+              ctx.fillText('MAX REINFORCEMENT', CANVAS_WIDTH / 2, 55);
+            }
+          } else {
+            ctx.fillStyle = canSeverTether ? '#ff6666' : '#999999';
+            ctx.fillText(canSeverTether ? 'CLICK TO SEVER' : 'SEVER COOLDOWN', CANVAS_WIDTH / 2, 55);
+          }
+        }
+      }
+
+      // Draw Core with more detail
       ctx.fillStyle = '#8B4513';
       ctx.beginPath();
       ctx.arc(core.position.x, core.position.y, CORE_RADIUS, 0, Math.PI * 2);
       ctx.fill();
 
-      // Draw rivets on Core
+      // Core border
+      ctx.strokeStyle = '#5a3a1a';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+
+      // Draw rivets
       ctx.fillStyle = '#5a3a1a';
       for (let i = 0; i < 6; i++) {
         const angle = (i / 6) * Math.PI * 2;
@@ -341,43 +695,103 @@ function GameCanvas() {
         ctx.fill();
       }
 
-      // Draw winner announcement if game over
+      // Draw "CORE" label
+      ctx.fillStyle = '#ccc';
+      ctx.font = 'bold 10px Courier New';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('CORE', core.position.x, core.position.y);
+      ctx.textBaseline = 'alphabetic';
+
+      // Draw particles with trails
+      particles.forEach(p => {
+        // Draw trail
+        if (p.trail.length > 1) {
+          ctx.beginPath();
+          ctx.moveTo(p.trail[0].x, p.trail[0].y);
+          for (let i = 1; i < p.trail.length; i++) {
+            ctx.lineTo(p.trail[i].x, p.trail[i].y);
+          }
+          ctx.strokeStyle = p.color;
+          ctx.lineWidth = p.size * 0.5;
+          ctx.globalAlpha = p.life * 0.3;
+          ctx.stroke();
+        }
+
+        // Draw particle
+        ctx.globalAlpha = p.life;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Add flicker effect
+        if (Math.random() > 0.7) {
+          ctx.globalAlpha = p.life * 0.5;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size * 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      });
+      ctx.globalAlpha = 1.0;
+
+      // Draw action feedback
+      if (actionFeedback) {
+        ctx.globalAlpha = Math.min(1, actionFeedback.life / 20);
+        ctx.fillStyle = '#FFD700';
+        ctx.font = 'bold 18px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText(actionFeedback.text, actionFeedback.x, actionFeedback.y);
+        ctx.globalAlpha = 1.0;
+      }
+
+      // Draw winner announcement
       if (winnerRef.current) {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        ctx.fillStyle = '#FFD700';  // Gold color
+        ctx.fillStyle = '#FFD700';
         ctx.font = 'bold 48px Courier New';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(`PLAYER ${winnerRef.current} WINS!`, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 30);
+        ctx.fillText(`PLAYER ${winnerRef.current} WINS!`, CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 - 40);
 
         ctx.fillStyle = '#ffffff';
         ctx.font = '24px Courier New';
         ctx.fillText('Click to play again', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 30);
+        ctx.textBaseline = 'alphabetic';
       }
 
-      // Continue render loop
+      ctx.restore(); // Restore from camera shake
+
+      updateParticles();
+      updateActionFeedback();
+      updateShake();
       animationFrameId = requestAnimationFrame(render);
     }
 
     render();
 
-    // Cleanup
     return () => {
       cancelAnimationFrame(animationFrameId);
       canvas.removeEventListener('click', handleCanvasClick);
+      canvas.removeEventListener('mousemove', handleMouseMove);
       if (runnerRef.current) {
         Matter.Runner.stop(runnerRef.current);
       }
     };
-  }, []);
+  }, [showInstructions, canSever]);
 
   return React.createElement('canvas', {
     ref: canvasRef,
     width: 800,
     height: 600,
-    style: { border: '2px solid #8B4513' }
+    style: {
+      border: '3px solid #4a4a4a',
+      borderRadius: '8px',
+      boxShadow: '0 0 20px rgba(0,0,0,0.5)',
+      cursor: showInstructions ? 'pointer' : 'crosshair'
+    }
   });
 }
 
@@ -388,11 +802,21 @@ function App() {
         width: '100vw',
         height: '100vh',
         display: 'flex',
+        flexDirection: 'column',
         justifyContent: 'center',
         alignItems: 'center',
-        background: '#1a1a1a'
+        background: '#0a0a0a',
+        fontFamily: 'Courier New, monospace'
       }
     },
+    React.createElement('h1', {
+      style: {
+        color: '#8B4513',
+        margin: '0 0 20px 0',
+        fontSize: '24px',
+        textShadow: '2px 2px 4px rgba(0,0,0,0.5)'
+      }
+    }, '⚙️ SEVER - Digital Judo ⚙️'),
     React.createElement(GameCanvas)
   );
 }
